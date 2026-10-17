@@ -60,6 +60,46 @@ Note: score questions accept the `levels` key on the tool and are mapped to the
 API's `criteria` list automatically; `jev_evaluate` callers may use either
 spelling (`criteria` wins if both are present).
 
+## Vision (Jev 1.14, `jev_find`)
+
+Jev 1.14.0 (alias `jev-preview`, released 2026-10-14) adds image input and the
+Box question type: where something is in a photo. TypeSafe calls this
+"Dreamer-ready" — the request format, answers, and limits can change between
+releases, so vision ships **behind a setting**:
+
+```yaml
+plugins:
+  entries:
+    jev:
+      settings:
+        vision_enabled: true    # off by default
+        vision_model: jev-preview
+```
+
+`jev_find(image_path|image_url, target)` sends ONE request with two questions:
+
+1. **Presence gate (a Noul)** — "is the target visible?"
+2. **Box** — `{top, bottom, left, right}`, each a 0-1 fraction of image
+   width/height, plus `confidence`.
+
+The gate exists because a Box ALWAYS answers, even on an empty photo (an
+independent 1,000-photo test observed 20 empty photos all returning boxes).
+Read `gate_passed`/`skipped_by_gate` first; only trust `box` after the gate
+passes. Both confidences jitter run-to-run (observed ≈0.05 or worse on
+presence nouls across identical inputs) — treat a weak gate as a retry
+signal, not proof of absence. Small targets in large images get missed: crop
+the region and ask again, or ask about regions first.
+
+Preparation is built in: PNG/JPEG (converted), EXIF-rotated upright (the API
+strips metadata and never applies EXIF orientation), longest side ≤ 1568 px,
+each side ≥ 280 px (padded up), baseline JPEG re-encode. Constraints worth
+knowing: 16 MiB per file; 32 MiB request body; every image must be referenced;
+a Choice question without `criteria` is HTTP 422.
+
+Out of scope and why: browser/computer-use driving is a different project; a
+tile-grid search for multi-megapixel images needs more real-image validation
+before shipping.
+
 ## Testing
 
 `tests/agent_test.py` is a stdlib-only integration harness that drives real
@@ -86,10 +126,11 @@ tolerance bands rather than exact values.
 
 ```
 plugin.yaml    # Hermes manifest (v1): tools, env, config schema
-pyproject.toml # python dependencies (httpx)
+pyproject.toml # python dependencies (httpx, pillow)
 __init__.py    # register(ctx): wires schemas → handlers, bundles the skill
 schemas.py     # JSON schemas the LLM reads to decide when to call
 tools.py       # handlers: always return JSON strings, errors included
+images.py      # EXIF-safe image preparation for image-capable tools
 client.py      # thin httpx wrapper around the TypeSafe System One API
 skills/        # bundled usage skill (jev-questions)
 tests/         # agent-path integration harness

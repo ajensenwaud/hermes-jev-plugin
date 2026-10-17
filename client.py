@@ -22,6 +22,13 @@ DEFAULT_MODEL = "jev-latest"
 DEFAULT_TIMEOUT = 30.0
 
 VALID_TYPES = {"noul", "choice", "score"}
+# "box" is valid only with the images header (see IMAGES_HEADER) and only on
+# Jev 1.14 (alias jev-preview). Text-only tools never send it.
+BOX_TYPE = "box"
+IMAGES_HEADER = "TypeSafe-Danger-Zone-Images"
+# Docs limits: PNG/JPEG, longest side <= 1568, each side >= 280, 16 MiB/file.
+MAX_IMAGE_SIDE = 1568
+MIN_IMAGE_SIDE = 280
 
 
 class JevError(Exception):
@@ -42,16 +49,17 @@ def normalize_questions(raw: Any) -> dict:
     """Accept dict-form questions (name -> spec) and return a validated dict.
 
     Each spec must be a dict with:
-      type: 'noul' | 'choice' | 'score'
+      type: 'noul' | 'choice' | 'score' | 'box'
       instructions: str (the atomic question; required for all types)
       criteria: dict (choice) | list[dict] (score) | dict (noul, optional)
+      box questions take NO criteria.
 
     Also tolerates the SDK-style 'criterion' key used by noul questions.
     """
     if not isinstance(raw, dict) or not raw:
         raise JevError(
             "questions must be a non-empty JSON object mapping name -> "
-            "{'type': 'noul'|'choice'|'score', 'instructions': str, 'criteria': ...}"
+            "{'type': 'noul'|'choice'|'score'|'box', 'instructions': str, 'criteria': ...}"
         )
 
     out: dict[str, dict] = {}
@@ -61,15 +69,18 @@ def normalize_questions(raw: Any) -> dict:
         if not isinstance(spec, dict):
             raise JevError(f"question '{name}' must be an object")
         qtype = spec.get("type")
-        if qtype not in VALID_TYPES:
-            raise JevError(f"question '{name}': type must be one of {sorted(VALID_TYPES)}")
+        if qtype not in VALID_TYPES | {BOX_TYPE}:
+            raise JevError(f"question '{name}': type must be one of {sorted(VALID_TYPES | {BOX_TYPE})}")
         instr = spec.get("instructions")
         if not isinstance(instr, str) or not instr.strip():
             raise JevError(f"question '{name}': missing 'instructions'")
 
         q: dict[str, Any] = {"type": qtype, "instructions": instr}
 
-        if qtype == "choice":
+        if qtype == BOX_TYPE:
+            if spec.get("criteria") is not None:
+                raise JevError(f"question '{name}': box questions take no criteria")
+        elif qtype == "choice":
             criteria = spec.get("criteria")
             if not isinstance(criteria, dict) or not criteria:
                 raise JevError(
@@ -100,29 +111,63 @@ def normalize_questions(raw: Any) -> dict:
     return out
 
 
+def build_payload(
+    state: Any,
+    questions: dict,
+    model: str = DEFAULT_MODEL,
+    assets: dict | None = None,
+) -> tuple[dict, dict[str, str]]:
+    """Build the request payload + headers; validate assets before sending.
+
+    Asset validation runs here so malformed image fields fail locally,
+    before any network round trip (docs: unreferenced/broken assets make
+    the WHOLE request fail with 400).
+    """
+    payload: dict[str, Any] = {"state": state, "model": model, "questions": questions}
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if assets:
+        for ref, entry in assets.items():
+            if not isinstance(ref, str) or not ref or len(ref) > 1024:
+                raise JevError(f"invalid image reference: {ref!r}")
+            if not isinstance(entry, dict) or entry.get("type") != "image":
+                raise JevError(f"asset {ref!r}: entries must be type 'image'")
+            if not entry.get("data_base64"):
+                raise JevError(f"asset {ref!r}: missing data_base64")
+            blob = json.dumps(payload)
+            if ref not in blob:
+                raise JevError(
+                    f"asset {ref!r} is not referenced anywhere in state/questions; "
+                    "the API rejects unreferenced assets with HTTP 400"
+                )
+        payload["assets"] = assets
+        headers[IMAGES_HEADER] = "true"
+    return payload, headers
+
+
 def call_system_one(
-    state: str,
+    state: Any,
     questions: dict,
     model: str = DEFAULT_MODEL,
     timeout: float = DEFAULT_TIMEOUT,
     max_retries: int = 2,
+    assets: dict | None = None,
 ) -> dict:
-    """POST state + questions to TypeSafe; return the parsed response dict."""
+    """POST state + questions to TypeSafe; return the parsed response dict.
+
+    `state` may be a string, a JSON object, or a JSON array. `assets` maps an
+    image reference string -> {'type': 'image', 'format': 'png'|'jpg',
+    'data_base64': ...}. Sending assets adds the TypeSafe-Danger-Zone-Images
+    header; a request with an image or a box question without it is HTTP 400.
+    """
     key = _get_key()
-    payload = {"state": state, "model": model, "questions": questions}
+    payload, headers = build_payload(state, questions, model, assets)
+    headers["Authorization"] = f"Bearer {key}"
 
     last_err: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.post(
-                    API_URL,
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
+            with httpx.Client(timeout=timeout) as http:
+                resp = http.post(API_URL, headers=headers, json=payload)
             if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
                 wait = 1.5 * (attempt + 1)
                 logger.warning("TypeSafe API %s; retrying in %.1fs", resp.status_code, wait)
@@ -179,6 +224,12 @@ def summarize_answers(answers: dict) -> dict:
                 "type": "score",
                 "score": ans.get("score"),
                 "legend": ans.get("legend"),
+                "confidence": ans.get("confidence"),
+            }
+        elif qtype == BOX_TYPE:
+            entry = {
+                "type": "box",
+                "box": ans.get("box"),
                 "confidence": ans.get("confidence"),
             }
         else:

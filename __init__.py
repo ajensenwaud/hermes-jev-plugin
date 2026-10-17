@@ -5,6 +5,7 @@ Registers four tools backed by the TypeSafe Jev API:
   jev_check    — single yes/no (noul)
   jev_route    — pick one option (choice)
   jev_score    — ordered rubric rating (score)
+When vision_enabled is on, also: jev_find — presence-gated Box on an image (Jev 1.14).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import logging
 
 from . import client, tools
-from .schemas import CHECK, EVALUATE, ROUTE, SCORE
+from .schemas import CHECK, EVALUATE, FIND, ROUTE, SCORE
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,17 @@ def register(ctx) -> None:
                       handler=lambda args, **kw: tools.route(args, ctx=ctx, **kw), **common)
     ctx.register_tool(name="jev_score", schema=SCORE,
                       handler=lambda args, **kw: tools.score(args, ctx=ctx, **kw), **common)
+
+    # Vision tools register only when enabled: images/Box are Dreamer-ready
+    # (format can change between releases) and need Jev 1.14.
+    try:
+        if ctx.get_config("vision_enabled", default=False):
+            ctx.register_tool(name="jev_find", schema=FIND,
+                              handler=lambda args, **kw: tools.find(args, ctx=ctx, **kw), **common)
+            logger.info("jev: vision enabled — jev_find registered (model %s)",
+                        ctx.get_config("vision_model", default="jev-preview"))
+    except Exception:  # noqa: BLE001 — vision must never break plugin load
+        logger.debug("jev: vision tools not registered", exc_info=True)
 
     # Bundle the usage skill so the agent can load it on demand.
     try:

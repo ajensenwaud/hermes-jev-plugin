@@ -14,6 +14,7 @@ provides_tools:
   - jev_check
   - jev_route
   - jev_score
+  - jev_find
 requires_env:
   - name: TYPESAFE_API_KEY
     description: TypeSafe API key for the Jev System One API
@@ -32,3 +33,14 @@ config_schema:
     type: int
     default: 20
     description: Maximum number of questions per jev_evaluate call
+  vision_enabled:
+    type: bool
+    default: false
+    description: >-
+      Register jev_find (image questions + bounding box). Images and Box are
+      Dreamer-ready at TypeSafe: the request format, answers, and limits can
+      change between releases. Also needs Pillow.
+  vision_model:
+    type: str
+    default: "jev-preview"
+    description: Model for image questions; Box questions must run on Jev 1.14
