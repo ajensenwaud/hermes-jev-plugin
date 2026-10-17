@@ -10,18 +10,26 @@ Handler rules (per Hermes plugin contract):
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
-from . import client
+from . import client, images as images_mod
 
 
 def _config(ctx: Any) -> dict:
     """Read plugin settings with defaults; never raise."""
-    cfg = {"model": client.DEFAULT_MODEL, "timeout_seconds": client.DEFAULT_TIMEOUT}
+    cfg = {
+        "model": client.DEFAULT_MODEL,
+        "timeout_seconds": client.DEFAULT_TIMEOUT,
+        "vision_enabled": False,
+        "vision_model": "jev-preview",
+    }
     try:
         if ctx is not None:
             cfg["model"] = ctx.get_config("model", default=client.DEFAULT_MODEL)
             cfg["timeout_seconds"] = int(ctx.get_config("timeout_seconds", default=client.DEFAULT_TIMEOUT))
+            cfg["vision_enabled"] = bool(ctx.get_config("vision_enabled", default=False))
+            cfg["vision_model"] = str(ctx.get_config("vision_model", default="jev-preview"))
     except Exception:
         pass
     return cfg
@@ -212,3 +220,91 @@ def score(args: dict, ctx=None, **kwargs) -> str:
             "usage": client.usage_of(resp),
         }
     )
+
+
+def find(args: dict, ctx=None, **kwargs) -> str:
+    """jev_find: visibility-gated Box (Jev 1.14 vision).
+
+    Two questions in ONE request: a presence Noul (the gate) and the Box.
+    The gate exists because a Box answer is ALWAYS a box, even when the
+    object is absent — confident-looking full-image boxes on empty photos.
+    This tool always returns the raw box so nothing is hidden from callers;
+    the skip decision is the caller's, via gate_passed/skipped_by_gate.
+    """
+    image_path = args.get("image_path")
+    image_url = args.get("image_url")
+    target = args.get("target")
+    if not isinstance(target, str) or not target.strip():
+        return _error("Need a non-empty 'target' describing what to find in the image.")
+
+    try:
+        gate_floor = float(args.get("gate_floor", 0.6))
+    except (TypeError, ValueError):
+        return _error("gate_floor must be a number from 0 to 1.")
+    if not 0.0 <= gate_floor <= 1.0:
+        return _error("gate_floor must be a number from 0 to 1.")
+
+    if image_path and image_url:
+        return _error("Pass image_path or image_url, not both.")
+    if image_url and not image_path:
+        temp_path = images_mod.download_to_temp(str(image_url))
+        image_path = temp_path
+    if not isinstance(image_path, str) or not image_path.strip():
+        return _error("Need image_path (a local PNG/JPEG file) or image_url.")
+    image_path = os.path.abspath(os.path.expanduser(image_path))
+    if not os.path.isfile(image_path):
+        return _error(f"image_path does not exist: {image_path}")
+
+    cfg = _config(ctx)
+    model = args.get("model") or cfg["vision_model"]
+
+    try:
+        ref, asset = images_mod.local_image_to_asset(image_path)
+    except client.JevError as e:
+        return _error(str(e))
+    ref_key = f"{ref[:8]}-photo"
+    assets = {ref_key: asset}
+    try:
+        state = images_mod.make_state(ref_key, args.get("state"))
+        questions = {
+            "present": {
+                "type": "noul",
+                "instructions": f"Is {target} visible in `{ref_key}`?",
+            },
+            "locate": {
+                "type": "box",
+                "instructions": f"{target} in `{ref_key}`",
+            },
+        }
+        resp = client.call_system_one(
+            state=state,
+            questions=questions,
+            model=model,
+            timeout=float(cfg["timeout_seconds"]),
+            assets=assets,
+        )
+    except client.JevError as e:
+        return _error(str(e))
+
+    answers = resp.get("answers")
+    if not isinstance(answers, dict):
+        return _error("TypeSafe returned no answers object.", raw=resp)
+    present = (answers.get("present") or {}).get("noul")
+    locate = answers.get("locate") or {}
+    if present is None and locate.get("type") != "box":
+        return _error("TypeSafe returned neither the gate noul nor a box answer.", raw=resp)
+
+    gate_passed = (present is not None) and present >= gate_floor
+    out: dict[str, Any] = {
+        "model": client.model_of(resp) or model,
+        "target": target,
+        "image": image_path,
+        "gate_floor": gate_floor,
+        "present": present,
+        "gate_passed": gate_passed,
+        "skipped_by_gate": not gate_passed,
+        "box": locate.get("box"),
+        "box_confidence": locate.get("confidence"),
+        "usage": client.usage_of(resp),
+    }
+    return client.compact_json(out)

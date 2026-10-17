@@ -151,3 +151,65 @@ SCORE = {
 }
 
 SCHEMAS = [EVALUATE, CHECK, ROUTE, SCORE]
+
+FIND = {
+    "name": "jev_find",
+    "description": (
+        "Find an object in an IMAGE and get its bounding box, protected by a "
+        "presence gate. Vision requires Jev 1.14 (the plugin's vision_model "
+        "default 'jev-preview'); TypeSafe marks images/Box 'Dreamer-ready', "
+        "so treat answers as advisory and re-verify anything load-bearing. "
+        "TWO rules built into this tool: (1) the photo is prepared for you — "
+        "PNG/JPEG, EXIF upright, longest side <= 1568 px, each side >= 280 px, "
+        "standard baseline JPEG; pass a local file path or a public http(s) "
+        "image URL. (2) the presence gate ships inside the same API call as "
+        "the Box, because a Box ALWAYS answers — even an empty photo returns "
+        "a confident-looking full-image box. Read gate_passed/"
+        "skipped_by_gate FIRST; only trust 'box' when the gate passed. Gate "
+        "confidence and box confidence both jitter run-to-run: retry a weak "
+        "gate before concluding. Small targets in large images can be missed: "
+        "crop first, or ask about a region. One box per call — several "
+        "objects need several calls. The image bytes and the target "
+        "description are sent to the TypeSafe API."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_path": {
+                "type": "string",
+                "description": "Local path of a PNG or JPEG photo. Preferred: no "
+                "download, nothing fetched.",
+            },
+            "image_url": {
+                "type": "string",
+                "description": "Public http(s) image URL — downloaded to a temp "
+                "file and sent to TypeSafe as bytes. Not for private hosts.",
+            },
+            "target": {
+                "type": "string",
+                "description": "What to find, e.g. 'the red square in `photo`'. "
+                "One instance per call; when several identical items exist, "
+                "describe the specific one ('the mug nearest the sink').",
+            },
+            "state": {
+                "type": "string",
+                "description": "Optional extra context string the gate and the box "
+                "should consider ('front-door camera, night, IR glare expected').",
+            },
+            "gate_floor": {
+                "type": "number",
+                "description": "Skip-the-box threshold for the presence gate, 0-1. "
+                "Default 0.6. Presence nouls jitter (~±0.05 or worse); a low gate "
+                "on real images is a retry signal, not proof of absence.",
+            },
+            "model": {
+                "type": "string",
+                "description": "Optional TypeSafe model id; MUST be Jev 1.14 for "
+                "Box (default: the vision_model setting, 'jev-preview').",
+            },
+        },
+        "required": ["target"],
+    },
+}
+
+SCHEMAS = [EVALUATE, CHECK, ROUTE, SCORE, FIND]
