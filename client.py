@@ -29,7 +29,14 @@ class JevError(Exception):
 
 
 def _get_key() -> str:
-    key = os.environ.get("TYPESAFE_API_KEY", "").strip()
+    # Under a multiplexed gateway the profile .env is not loaded into
+    # os.environ; credentials resolve through the profile secret scope.
+    try:
+        from agent.secret_scope import get_secret
+
+        key = (get_secret("TYPESAFE_API_KEY", "") or "").strip()
+    except Exception:
+        key = os.environ.get("TYPESAFE_API_KEY", "").strip()
     if not key:
         raise JevError(
             "TYPESAFE_API_KEY is not set. Get one at https://console.typesafe.ai/keys "
