@@ -15,15 +15,44 @@ from typing import Any
 from . import client
 
 
+DEFAULT_MAX_QUESTIONS = 20
+
+# Hermes reserves the plugin-settings roots `model`, `plugins`, `security` and
+# `settings`: ctx.get_config("model") raises. The model id is therefore read
+# from `jev_model`.
+def _positive(cast):
+    def parse(value):
+        number = cast(value)
+        if number <= 0:
+            raise ValueError(f"expected a positive number, got {value!r}")
+        return number
+    return parse
+
+
+_SETTINGS = (
+    # (config key, cfg key, parser, default). A value the parser rejects falls back
+    # to its default, so a non-positive limit or timeout cannot disable the tool.
+    ("jev_model", "model", str, client.DEFAULT_MODEL),
+    ("timeout_seconds", "timeout_seconds", _positive(float), client.DEFAULT_TIMEOUT),
+    ("max_questions", "max_questions", _positive(int), DEFAULT_MAX_QUESTIONS),
+)
+
+
 def _config(ctx: Any) -> dict:
-    """Read plugin settings with defaults; never raise."""
-    cfg = {"model": client.DEFAULT_MODEL, "timeout_seconds": client.DEFAULT_TIMEOUT}
-    try:
-        if ctx is not None:
-            cfg["model"] = ctx.get_config("model", default=client.DEFAULT_MODEL)
-            cfg["timeout_seconds"] = int(ctx.get_config("timeout_seconds", default=client.DEFAULT_TIMEOUT))
-    except Exception:
-        pass
+    """Read plugin settings with defaults; never raise.
+
+    Each key is read and cast on its own, so one bad value falls back to its
+    default without discarding the other settings.
+    """
+    cfg = {name: default for _, name, _, default in _SETTINGS}
+    if ctx is None:
+        return cfg
+    for key, name, parse, default in _SETTINGS:
+        try:
+            value = ctx.get_config(key, default=default)
+            cfg[name] = parse(value) if value not in (None, "") else default
+        except Exception:
+            cfg[name] = default
     return cfg
 
 
@@ -44,7 +73,7 @@ def evaluate(args: dict, ctx=None, **kwargs) -> str:
         return _error(str(e))
 
     cfg = _config(ctx)
-    max_q = cfg.get("max_questions", 20)
+    max_q = cfg["max_questions"]
     if len(questions) > max_q:
         return _error(f"Too many questions ({len(questions)}); max is {max_q} per call.")
 

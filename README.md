@@ -31,9 +31,15 @@ prompts for `TYPESAFE_API_KEY` (saved to `~/.hermes/.env`), or set it yourself.
 
 ## Settings (`plugins.entries.jev.settings` in config.yaml)
 
-- `model` — TypeSafe model id (default `jev-latest`)
+- `jev_model` — TypeSafe model id (default `jev-latest`). Hermes reserves the
+  `model` settings key for core, so the plugin reads `jev_model` instead.
+  Pin a versioned id (e.g. `jev-1.14.0`) if you tuned thresholds against it.
 - `timeout_seconds` — HTTP timeout (default 30)
 - `max_questions` — max questions per `jev_evaluate` call (default 20)
+
+Each setting is read on its own; an invalid value (including a non-positive
+`timeout_seconds` or `max_questions`) falls back to its default without
+discarding the others.
 
 ## Coding-agent recipes
 
@@ -61,6 +67,12 @@ API's `criteria` list automatically; `jev_evaluate` callers may use either
 spelling (`criteria` wins if both are present).
 
 ## Testing
+
+Offline unit tests (no API key, no network):
+
+```
+python -m unittest discover -s tests -p "test_*.py"
+```
 
 `tests/agent_test.py` is a stdlib-only integration harness that drives real
 `hermes -z` sessions (one per scenario, restricted to the `jev` toolset) and

@@ -20,10 +20,10 @@ requires_env:
     url: https://console.typesafe.ai/keys
     secret: true
 config_schema:
-  model:
+  jev_model:
     type: str
     default: "jev-latest"
-    description: TypeSafe System One model id
+    description: TypeSafe System One model id (named jev_model because Hermes reserves the `model` settings key)
   timeout_seconds:
     type: int
     default: 30
